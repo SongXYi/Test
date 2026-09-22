@@ -1,20 +1,18 @@
 """AI layer -- the core engine of DealKeeper (Groq API).
 
-Nothing enters the system without passing through this module. A raw voucher
-photo or a pasted promo message is meaningless to the app until the model has
-turned it into the structured record that logic_manager reasons about and
-data_manager stores. Delete this file and the product has no purpose left.
+Nothing enters the system without passing through this module. A forwarded
+promo message, or a handful of details typed in by hand, is meaningless to the
+app until the model has turned it into the structured record that logic_manager
+reasons about and data_manager stores. Delete this file and the product has no
+purpose left.
 
 Responsibilities here are strictly: build the prompt, talk to the API, parse
 the reply and validate its schema. There are no business rules in this file --
 "is this deal eligible / expiring / a duplicate" all belong to logic_manager.
 """
 
-import base64
 import json
 import logging
-import mimetypes
-import os
 import time
 import urllib.error
 import urllib.request
@@ -51,8 +49,8 @@ ELIGIBILITY_FLAGS = (
 )
 
 SYSTEM_PROMPT = """You are the extraction engine of a personal deal and voucher tracker.
-You convert one messy promotion (pasted text, forwarded chat message, or a photo of a
-voucher/receipt/poster) into exactly ONE JSON object.
+You convert one messy promotion (pasted advertisement text, a forwarded chat or email
+message, or a few details typed in by the user) into exactly ONE JSON object.
 
 Return JSON only. No markdown fences, no commentary, no trailing text.
 
@@ -104,8 +102,8 @@ Hard rules:
 5. Strip currency symbols and thousands separators from all numbers.
 6. If the input is not a deal/promotion at all, return the schema with nulls, category "other",
    confidence 0.0 and every required field listed in missing_fields.
-7. Be honest with "confidence": reading a blurry image or guessing between two dates means a
-   value below 0.6.
+7. Be honest with "confidence": guessing between two dates, or inferring the merchant from
+   a URL or a hashtag, means a value below 0.6.
 """ % {
     "categories": ", ".join(config.VALID_CATEGORIES),
     "discount_types": ", ".join(config.VALID_DISCOUNT_TYPES),
@@ -121,33 +119,33 @@ def build_prompt(record, correction=None):
     """Turn an input record into a ready-to-send prompt payload.
 
     record comes from io_manager and may contain:
-        source_type : "text" | "image" | "manual"
-        raw_text    : pasted promo text / manually typed details
-        image_path  : path to a voucher photo (source_type == "image")
+        source_type : "text" (pasted promotion) | "manual" (typed details)
+        raw_text    : pasted promo text, or the typed details as a text block
         hints       : dict of fields the user already typed by hand
 
     correction is an optional list of validation errors from a previous
     attempt; it is appended so the model can fix its own output.
 
-    Returns a dict: {"model", "system", "user_text", "image_data_url", "json_mode"}
+    Returns a dict: {"model", "system", "user_text", "json_mode"}
     """
     record = record if isinstance(record, dict) else {}
     source_type = str(record.get("source_type") or "text").lower()
     raw_text = str(record.get("raw_text") or "").strip()
     hints = record.get("hints") if isinstance(record.get("hints"), dict) else {}
-    image_path = record.get("image_path") or ""
 
     sections = []
-    if source_type == "image":
+    if source_type == "manual":
         sections.append(
-            "TASK: read the attached voucher/promotion image and extract the deal."
+            "TASK: normalise the deal details the user typed in below into the schema. "
+            "Read their wording carefully -- the discount type, eligibility and terms "
+            "are often hidden in the description they wrote."
         )
     else:
         sections.append("TASK: extract the deal from the promotion text below.")
 
     if raw_text:
         sections.append("PROMOTION INPUT:\n\"\"\"\n%s\n\"\"\"" % raw_text[:6000])
-    elif source_type != "image":
+    else:
         sections.append("PROMOTION INPUT: (empty)")
 
     known = _format_hints(hints)
@@ -167,21 +165,14 @@ def build_prompt(record, correction=None):
             "the full JSON object:\n- %s" % "\n- ".join(str(item) for item in correction)
         )
 
-    image_data_url = ""
-    if source_type == "image" and image_path:
-        image_data_url = encode_image(image_path)
-
-    model = config.VISION_MODEL if image_data_url else config.TEXT_MODEL
-
     prompt = {
-        "model": model,
+        "model": config.TEXT_MODEL,
         "system": SYSTEM_PROMPT,
         "user_text": "\n\n".join(sections),
-        "image_data_url": image_data_url,
         "json_mode": True,
     }
-    LOGGER.info("Built prompt: source=%s model=%s image=%s chars=%d",
-                source_type, model, bool(image_data_url), len(prompt["user_text"]))
+    LOGGER.info("Built prompt: source=%s model=%s chars=%d",
+                source_type, prompt["model"], len(prompt["user_text"]))
     return prompt
 
 
@@ -194,23 +185,6 @@ def _format_hints(hints):
             continue
         lines.append("- %s: %s" % (key, value))
     return "\n".join(lines)
-
-
-def encode_image(image_path):
-    """Read an image and return a base64 data URL, or "" on any failure."""
-    try:
-        size = os.path.getsize(image_path)
-        if size > config.MAX_IMAGE_BYTES:
-            LOGGER.error("Image %s is too large (%d bytes).", image_path, size)
-            return ""
-        with open(image_path, "rb") as handle:
-            blob = handle.read()
-    except OSError as error:
-        LOGGER.error("Could not read image %s: %s", image_path, error)
-        return ""
-
-    mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
-    return "data:%s;base64,%s" % (mime, base64.b64encode(blob).decode("ascii"))
 
 
 # --------------------------------------------------------------------------
@@ -316,21 +290,12 @@ def call_api(prompt):
 
 def _build_payload(prompt, json_mode):
     """Assemble the chat-completions request body."""
-    if prompt.get("image_data_url"):
-        user_content = [
-            {"type": "text", "text": prompt["user_text"]},
-            {"type": "image_url",
-             "image_url": {"url": prompt["image_data_url"]}},
-        ]
-    else:
-        user_content = prompt["user_text"]
-
     payload = {
         "model": prompt.get("model") or config.TEXT_MODEL,
         "temperature": config.API_TEMPERATURE,
         "messages": [
             {"role": "system", "content": prompt.get("system", SYSTEM_PROMPT)},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": prompt["user_text"]},
         ],
     }
     if json_mode:

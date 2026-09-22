@@ -23,14 +23,10 @@ ENV_FILE = os.path.join(BASE_DIR, ".env")
 # --------------------------------------------------------------------------
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 TEXT_MODEL = os.environ.get("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
-VISION_MODEL = os.environ.get(
-    "GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
-)
 API_TIMEOUT_SECONDS = 45
 API_MAX_ATTEMPTS = 3          # network/transient retries inside call_api
 SCHEMA_MAX_ATTEMPTS = 2       # re-ask the model when the JSON fails validation
 API_TEMPERATURE = 0.0         # deterministic-as-possible extraction
-MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 # --------------------------------------------------------------------------
 # Domain vocabulary -- the fixed set the app is willing to accept from the AI
@@ -56,7 +52,8 @@ VALID_DISCOUNT_TYPES = (
     "other",
 )
 
-VALID_SOURCE_TYPES = ("text", "image", "manual")
+# How a deal can reach the app. Image scanning is not offered yet.
+VALID_SOURCE_TYPES = ("text", "manual")
 
 # --------------------------------------------------------------------------
 # Business thresholds (used by logic_manager)
