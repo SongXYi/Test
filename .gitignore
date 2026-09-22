@@ -1,0 +1,14 @@
+# Secrets -- never commit the real Groq key
+.env
+
+# Runtime data and logs
+data/*.json
+data/*.log
+data/*.corrupt.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
