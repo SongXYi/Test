@@ -43,7 +43,14 @@ def startup():
     if not data_manager.profile_exists():
         io_manager.display_info(
             "First run -- let's set up your profile so eligibility works.")
-        profile = io_manager.prompt_profile(profile)
+        answered = io_manager.prompt_profile(profile)
+        if answered is None:
+            io_manager.display_info(
+                "Skipped for now. Eligibility will stay generic until you fill in "
+                "your profile from menu option 12.")
+        else:
+            profile = answered
+            io_manager.display_success("Profile saved.")
         data_manager.save_profile(profile)
 
     return profile, refreshed
@@ -59,6 +66,9 @@ def add_deal(profile):
     logic_manager decides what it means, data_manager stores the outcome.
     """
     raw_input_record = io_manager.prompt_new_deal()
+    if raw_input_record is None:
+        io_manager.display_cancelled("Adding a deal")
+        return
 
     # ---- AI layer: nothing continues without a valid structured payload ----
     io_manager.display_working("Sending the deal to the AI for extraction...")
@@ -75,7 +85,6 @@ def add_deal(profile):
         "created_at": date.today().isoformat(),
         "source_type": raw_input_record.get("source_type"),
         "raw_input": (raw_input_record.get("raw_text") or "")[:2000],
-        "image_path": raw_input_record.get("image_path") or "",
         "ai": ai_result["data"],
         "ai_model": ai_result.get("model"),
         "user": {"used": False, "used_on": None, "times_used": 0,
@@ -226,6 +235,10 @@ def mark_deal_used(profile):
 
     record = data_manager.get_record(deal_id)
     details = io_manager.prompt_usage_details(record)
+    if details is None:
+        io_manager.display_cancelled("Marking the deal as used")
+        return
+
     ok, updated, message = logic_manager.mark_used(
         record,
         amount_saved=details["amount_saved"],
@@ -248,6 +261,9 @@ def mark_deal_used(profile):
 def check_basket():
     """Which saved deals can this basket amount actually redeem?"""
     amount = io_manager.prompt_spend_amount()
+    if amount is None:
+        return
+
     active = data_manager.query(
         lambda record: record.get("queue") in (logic_manager.QUEUE_ACTIVE,
                                                logic_manager.QUEUE_ACT_NOW))
@@ -268,6 +284,9 @@ def check_basket():
 
 def search_deals():
     term = io_manager.prompt_search_term()
+    if term is None:
+        return
+
     matches = data_manager.query(logic_manager.filter_search(term))
     io_manager.display_list(logic_manager.rank(matches),
                             "Search results for '%s'" % term,
@@ -281,7 +300,12 @@ def edit_profile(profile):
         return profile
 
     updated = io_manager.prompt_profile(profile)
+    if updated is None:
+        io_manager.display_cancelled("The profile update")
+        return profile
+
     data_manager.save_profile(updated)
+    io_manager.display_success("Profile saved.")
 
     # Eligibility depends on the profile, so every deal is re-judged.
     refreshed, changed = logic_manager.refresh_statuses(data_manager.load(), updated)

@@ -7,19 +7,32 @@ it is asked for and how it is shown.
 Input rules: nothing leaves this module as a raw string. Values are validated
 for type, range and presence, bad input is re-prompted, and the caller receives
 a clean typed dict.
+
+Mistyped an answer? Every question accepts "b" (or "back") to step back to the
+previous question, and multi-question screens end with a draft you can edit
+answer by answer before anything is saved. Backing out of the first question
+cancels the screen and returns None to the caller.
 """
 
-import os
 from datetime import datetime
 
 import config
 
 WIDTH = 72
 DATE_FORMAT = "%Y-%m-%d"
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
+
+# Sentinel returned by every collector when the user asks to step back.
+BACK = "__back__"
+BACK_WORDS = ("b", "back")
+
+# The ways a deal can be added. Image scanning is not offered yet.
+ADD_METHODS = (
+    "Paste the promo text or chat message",
+    "Type the details in myself",
+)
 
 MENU_OPTIONS = (
-    ("1", "Add a deal (scan an image, paste text, or type it in)"),
+    ("1", "Add a deal (paste the promo text, or type it in)"),
     ("2", "My deals (ready to use)"),
     ("3", "Expiring soon"),
     ("4", "Needs review"),
@@ -75,14 +88,25 @@ def _reject(message):
     print("  !! %s" % message)
 
 
+def _is_back(answer):
+    """True when the user typed the go-back keyword."""
+    return str(answer or "").strip().lower() in BACK_WORDS
+
+
+def _back_hint(allow_back):
+    return " (b = back)" if allow_back else ""
+
+
 # ==========================================================================
 # Validated input collectors
 # ==========================================================================
-def ask_text(label, required=True, default="", max_length=2000):
+def ask_text(label, required=True, default="", max_length=2000, allow_back=True):
     """Ask for a string. Re-prompts while a required answer is blank."""
     suffix = " [%s]" % default if default else ""
     while True:
-        answer = _read("%s%s: " % (label, suffix)).strip()
+        answer = _read("%s%s%s: " % (label, suffix, _back_hint(allow_back))).strip()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer and default:
             return default
         if not answer:
@@ -96,10 +120,14 @@ def ask_text(label, required=True, default="", max_length=2000):
         return answer
 
 
-def ask_int(label, minimum=None, maximum=None, allow_blank=False, default=None):
+def ask_int(label, minimum=None, maximum=None, allow_blank=False, default=None,
+            allow_back=True):
     """Ask for a whole number inside an optional range."""
+    suffix = " [%s]" % default if default is not None else ""
     while True:
-        answer = _read("%s: " % label).strip()
+        answer = _read("%s%s%s: " % (label, suffix, _back_hint(allow_back))).strip()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer:
             if default is not None:
                 return default
@@ -121,11 +149,17 @@ def ask_int(label, minimum=None, maximum=None, allow_blank=False, default=None):
         return value
 
 
-def ask_float(label, minimum=None, maximum=None, allow_blank=False):
+def ask_float(label, minimum=None, maximum=None, allow_blank=False, default=None,
+              allow_back=True):
     """Ask for a decimal number (currency symbols and commas are tolerated)."""
+    suffix = " [%s]" % default if default is not None else ""
     while True:
-        answer = _read("%s: " % label).strip()
+        answer = _read("%s%s%s: " % (label, suffix, _back_hint(allow_back))).strip()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer:
+            if default is not None:
+                return default
             if allow_blank:
                 return None
             _reject("Please enter an amount.")
@@ -146,7 +180,7 @@ def ask_float(label, minimum=None, maximum=None, allow_blank=False):
         return round(value, 2)
 
 
-def ask_yes_no(label, default=None):
+def ask_yes_no(label, default=None, allow_back=True):
     """Ask a yes/no question and return a real boolean."""
     hint = ""
     if default is True:
@@ -156,7 +190,10 @@ def ask_yes_no(label, default=None):
     else:
         hint = " [y/n]"
     while True:
-        answer = _read("%s%s: " % (label, hint)).strip().lower()
+        answer = _read("%s%s%s: "
+                       % (label, hint, _back_hint(allow_back))).strip().lower()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer and default is not None:
             return default
         if answer in ("y", "yes"):
@@ -166,15 +203,20 @@ def ask_yes_no(label, default=None):
         _reject("Please answer y or n.")
 
 
-def ask_choice(label, options, allow_blank=False):
+def ask_choice(label, options, allow_blank=False, allow_back=True):
     """Show a numbered list and return the chosen option value."""
     print("%s:" % label)
     for index, option in enumerate(options, start=1):
         print("   %2d) %s" % (index, option))
+    if allow_back:
+        print("    b) go back to the previous question")
     while True:
-        answer = _read("Choose 1-%d%s: "
-                       % (len(options), " (blank to skip)" if allow_blank else "")
-                       ).strip()
+        answer = _read("Choose 1-%d%s%s: "
+                       % (len(options),
+                          " (blank to skip)" if allow_blank else "",
+                          " or b" if allow_back else "")).strip()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer and allow_blank:
             return ""
         try:
@@ -187,12 +229,19 @@ def ask_choice(label, options, allow_blank=False):
         _reject("Please choose a number between 1 and %d." % len(options))
 
 
-def ask_date(label, allow_blank=True):
+def ask_date(label, allow_blank=True, default=None, allow_back=True):
     """Ask for a YYYY-MM-DD date and return it as a validated string."""
     while True:
-        answer = _read("%s (YYYY-MM-DD%s): "
-                       % (label, ", blank if unknown" if allow_blank else "")).strip()
+        answer = _read("%s (YYYY-MM-DD%s%s)%s: "
+                       % (label,
+                          ", blank if unknown" if allow_blank else "",
+                          ", now %s" % default if default else "",
+                          _back_hint(allow_back))).strip()
+        if allow_back and _is_back(answer):
+            return BACK
         if not answer:
+            if default:
+                return default
             if allow_blank:
                 return None
             _reject("A date is required here.")
@@ -203,13 +252,17 @@ def ask_date(label, allow_blank=True):
             _reject("Use the format YYYY-MM-DD, for example 2026-08-31.")
 
 
-def ask_multiline(label):
+def ask_multiline(label, allow_back=True):
     """Collect pasted text until the user submits an empty line."""
     print("%s" % label)
     print("(paste as many lines as you like, then press Enter on a blank line)")
+    if allow_back:
+        print("(type 'back' on the first line to go back)")
     lines = []
     while True:
         line = _read("> ")
+        if allow_back and not lines and _is_back(line):
+            return BACK
         if not line.strip():
             if lines:
                 return "\n".join(lines).strip()
@@ -218,25 +271,93 @@ def ask_multiline(label):
         lines.append(line)
 
 
-def ask_image_path(label):
-    """Ask for a readable image file and return its path."""
+# ==========================================================================
+# Multi-question screens
+#
+# A screen is a list of (key, label, ask_function) steps. The driver below
+# walks them forwards, steps backwards when a collector returns BACK, and
+# cancels when the user backs out of the very first question. Each step
+# receives the answers collected so far, so a step can pre-fill the previous
+# answer as its default or skip itself entirely.
+# ==========================================================================
+def _run_steps(steps, values):
+    """Walk the steps, honouring BACK. Returns the answers, or None if cancelled."""
+    index = 0
+    while index < len(steps):
+        key, label, ask = steps[index]
+        answer = ask(values)
+        if answer == BACK:
+            index -= 1
+            if index < 0:
+                return None
+            print("  << back to: %s" % steps[index][1])
+            continue
+        values[key] = answer
+        index += 1
+    return values
+
+
+def _format_answer(value):
+    if value is None or value == "":
+        return "(not given)"
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return str(value)
+
+
+def _display_draft(title, steps, values):
+    """Show the answers collected so far, before anything is saved."""
+    _line()
+    print("%s -- check your answers" % title.upper())
+    _line()
+    for number, (key, label, _) in enumerate(steps, start=1):
+        print("  %2d) %-42s %s" % (number, label, _format_answer(values.get(key))))
+    _line()
+
+
+def _collect_with_review(title, steps, values=None):
+    """Run a screen, then let the user edit any single answer before saving.
+
+    Returns one of three things, so the caller can tell the two exits apart:
+        the answers dict -- the user saved them
+        BACK            -- the user stepped back past the very first question
+        None            -- the user chose to cancel the whole screen
+    """
+    answers = _run_steps(steps, dict(values or {}))
+    if answers is None:
+        return BACK
+
     while True:
-        answer = _read("%s: " % label).strip().strip('"').strip("'")
-        if not answer:
-            _reject("Please give the path to the image file.")
+        _display_draft(title, steps, answers)
+        action = ask_choice("What would you like to do?", [
+            "Save these answers",
+            "Change one answer",
+            "Start this screen over",
+            "Cancel and go back to the menu",
+        ], allow_back=False)
+
+        if action.startswith("Save"):
+            return answers
+        if action.startswith("Change"):
+            labels = [label for _, label, _ in steps]
+            chosen = ask_choice("Which answer is wrong?", labels, allow_blank=True,
+                                allow_back=False)
+            if not chosen:
+                continue
+            key, _, ask = steps[labels.index(chosen)]
+            answer = ask(answers)
+            if answer != BACK:
+                answers[key] = answer
             continue
-        path = os.path.expanduser(answer)
-        if not os.path.isfile(path):
-            _reject("No file found at '%s'." % path)
+        if action.startswith("Start"):
+            restarted = _run_steps(steps, {})
+            if restarted is None:
+                return BACK
+            answers = restarted
             continue
-        if not path.lower().endswith(IMAGE_EXTENSIONS):
-            _reject("Expected an image file (%s)." % ", ".join(IMAGE_EXTENSIONS))
-            continue
-        if os.path.getsize(path) > config.MAX_IMAGE_BYTES:
-            _reject("That image is larger than %d MB."
-                    % (config.MAX_IMAGE_BYTES // (1024 * 1024)))
-            continue
-        return path
+        return None
 
 
 # ==========================================================================
@@ -274,38 +395,58 @@ def show_menu():
 
 
 def prompt_profile(existing=None):
-    """Collect the profile used by the eligibility rules. Returns a typed dict."""
+    """Collect the profile used by the eligibility rules.
+
+    Returns a typed dict, or None if the user cancelled.
+    """
     current = existing if isinstance(existing, dict) else {}
     _line()
     print("YOUR PROFILE")
     print("Used to decide which deals you actually qualify for.")
     _line()
 
-    name = ask_text("Your name", required=False,
-                    default=str(current.get("name") or ""), max_length=60)
-    is_student = ask_yes_no("Are you a student?",
-                            default=bool(current.get("is_student")))
-    school = ""
-    if is_student:
-        school = ask_text("School / university name", required=False,
-                          default=str(current.get("school") or ""), max_length=80)
-    age = ask_int("Your age (0 to skip)", minimum=0, maximum=120,
-                  default=int(current.get("age") or 0))
-    is_senior = age >= 60
-    typical_spend = ask_float(
-        "Typical amount you spend in one purchase (%s, 0 to skip)" % config.CURRENCY,
-        minimum=0.0, maximum=1000000.0)
+    steps = [
+        ("name", "Your name",
+         lambda values: ask_text(
+             "Your name", required=False, max_length=60,
+             default=str(values.get("name") or current.get("name") or ""))),
+        ("is_student", "Are you a student?",
+         lambda values: ask_yes_no(
+             "Are you a student?",
+             default=bool(values.get("is_student",
+                                     current.get("is_student"))))),
+        ("school", "School / university",
+         lambda values: ask_text(
+             "School / university name", required=False, max_length=80,
+             default=str(values.get("school") or current.get("school") or ""))
+         if values.get("is_student") else ""),
+        ("age", "Your age",
+         lambda values: ask_int(
+             "Your age (0 to skip)", minimum=0, maximum=120,
+             default=int(values.get("age", current.get("age") or 0) or 0))),
+        ("typical_spend", "Typical spend per purchase",
+         lambda values: ask_float(
+             "Typical amount you spend in one purchase (%s)" % config.CURRENCY,
+             minimum=0.0, maximum=1000000.0,
+             default=float(values.get("typical_spend",
+                                      current.get("typical_spend") or 0.0) or 0.0))),
+    ]
 
-    profile = {
-        "name": name,
-        "is_student": bool(is_student),
-        "school": school,
-        "age": int(age),
-        "is_senior": bool(is_senior),
-        "typical_spend": float(typical_spend or 0.0),
+    # This is a top-level screen, so backing out and cancelling both mean
+    # "leave my profile alone".
+    answers = _collect_with_review("Your profile", steps)
+    if answers is None or answers == BACK:
+        return None
+
+    age = int(answers.get("age") or 0)
+    return {
+        "name": str(answers.get("name") or ""),
+        "is_student": bool(answers.get("is_student")),
+        "school": str(answers.get("school") or ""),
+        "age": age,
+        "is_senior": age >= 60,
+        "typical_spend": float(answers.get("typical_spend") or 0.0),
     }
-    display_success("Profile saved.")
-    return profile
 
 
 # ==========================================================================
@@ -314,72 +455,83 @@ def prompt_profile(existing=None):
 def prompt_new_deal():
     """Collect one new deal from the user.
 
-    Returns a typed dict for ai_manager:
-        {"source_type": "image"|"text"|"manual",
-         "raw_text": str, "image_path": str, "hints": dict}
+    Returns a typed dict for ai_manager, or None when the user backs out:
+        {"source_type": "text"|"manual", "raw_text": str, "hints": dict}
     """
-    _line()
-    print("ADD A DEAL")
-    _line()
-    source = ask_choice("How do you want to add it?", [
-        "Scan an image of the voucher/poster",
-        "Paste the promo text or chat message",
-        "Type the details in myself",
-    ])
+    while True:
+        _line()
+        print("ADD A DEAL")
+        _line()
+        method = ask_choice("How do you want to add it?", list(ADD_METHODS))
+        if method == BACK:
+            return None
 
-    record = {"source_type": "text", "raw_text": "", "image_path": "", "hints": {}}
+        if method.startswith("Paste"):
+            pasted = ask_multiline("Paste the deal / promo text below")
+            if pasted == BACK:
+                continue                     # back to the method question
+            return {"source_type": "text", "raw_text": pasted, "hints": {}}
 
-    if source.startswith("Scan"):
-        record["source_type"] = "image"
-        record["image_path"] = ask_image_path("Path to the image file")
-        extra = ask_text("Anything to add about this deal? (optional)",
-                         required=False, max_length=500)
-        record["raw_text"] = extra
-        print("Image queued for AI reading: %s" % os.path.basename(record["image_path"]))
-
-    elif source.startswith("Paste"):
-        record["source_type"] = "text"
-        record["raw_text"] = ask_multiline("Paste the deal / promo text below")
-
-    else:
-        record["source_type"] = "manual"
-        record["hints"] = _prompt_manual_details()
-        record["raw_text"] = _hints_to_text(record["hints"])
-
-    return record
+        hints = _prompt_manual_details()
+        if hints == BACK:
+            continue                         # back to the method question
+        if hints is None:
+            return None                      # cancelled outright
+        return {"source_type": "manual", "raw_text": _hints_to_text(hints),
+                "hints": hints}
 
 
 def _prompt_manual_details():
-    """Ask for deal details field by field; every value is typed and validated."""
+    """Ask for deal details field by field, then let the user fix any answer.
+
+    Returns the typed hints dict, BACK if the user stepped back past the first
+    question, or None if the user cancelled the screen.
+    """
     print("Type what you know. Leave a field blank if you are not sure --")
     print("the AI will work out the rest and anything still missing goes to review.")
-    hints = {}
-    hints["merchant"] = ask_text("Store / brand name", required=True, max_length=120)
-    hints["category"] = ask_choice("Category", list(config.VALID_CATEGORIES),
-                                   allow_blank=True)
-    hints["deal_description"] = ask_text("Describe the deal (e.g. 50% off 2nd item)",
-                                         required=True, max_length=300)
-    original = ask_float("Original price (%s, blank if unknown)" % config.CURRENCY,
-                         minimum=0.0, allow_blank=True)
-    if original is not None:
-        hints["original_price"] = original
-    discounted = ask_float("Price after discount (%s, blank if unknown)" % config.CURRENCY,
-                           minimum=0.0, allow_blank=True)
-    if discounted is not None:
-        hints["discounted_price"] = discounted
-    expiry = ask_date("Expiry date")
-    if expiry:
-        hints["expiry_date"] = expiry
-    minimum = ask_float("Minimum spend required (%s, blank if none)" % config.CURRENCY,
-                        minimum=0.0, allow_blank=True)
-    if minimum is not None:
-        hints["min_spend"] = minimum
-    conditions = ask_text("Conditions / who it is for (optional)",
-                          required=False, max_length=300)
-    if conditions:
-        hints["conditions"] = conditions
-    hints["single_use"] = ask_yes_no("Can it only be used once?", default=True)
-    return hints
+    print("At any question, type 'b' to go back to the one before it.")
+
+    steps = [
+        ("merchant", "Store / brand name",
+         lambda values: ask_text("Store / brand name", required=True, max_length=120,
+                                 default=str(values.get("merchant") or ""))),
+        ("category", "Category",
+         lambda values: ask_choice("Category", list(config.VALID_CATEGORIES),
+                                   allow_blank=True)),
+        ("deal_description", "Deal description",
+         lambda values: ask_text("Describe the deal (e.g. 50% off 2nd item)",
+                                 required=True, max_length=300,
+                                 default=str(values.get("deal_description") or ""))),
+        ("original_price", "Original price",
+         lambda values: ask_float(
+             "Original price (%s, blank if unknown)" % config.CURRENCY,
+             minimum=0.0, allow_blank=True, default=values.get("original_price"))),
+        ("discounted_price", "Price after discount",
+         lambda values: ask_float(
+             "Price after discount (%s, blank if unknown)" % config.CURRENCY,
+             minimum=0.0, allow_blank=True, default=values.get("discounted_price"))),
+        ("expiry_date", "Expiry date",
+         lambda values: ask_date("Expiry date", default=values.get("expiry_date"))),
+        ("min_spend", "Minimum spend",
+         lambda values: ask_float(
+             "Minimum spend required (%s, blank if none)" % config.CURRENCY,
+             minimum=0.0, allow_blank=True, default=values.get("min_spend"))),
+        ("conditions", "Conditions / who it is for",
+         lambda values: ask_text("Conditions / who it is for (optional)",
+                                 required=False, max_length=300,
+                                 default=str(values.get("conditions") or ""))),
+        ("single_use", "Can only be used once?",
+         lambda values: ask_yes_no("Can it only be used once?",
+                                   default=bool(values.get("single_use", True)))),
+    ]
+
+    answers = _collect_with_review("Deal details", steps)
+    if answers is None or answers == BACK:
+        return answers
+
+    # Drop the blanks so the AI is only told what the user actually knows.
+    return {key: value for key, value in answers.items()
+            if value not in (None, "", [], {})}
 
 
 def _hints_to_text(hints):
@@ -394,56 +546,100 @@ def _hints_to_text(hints):
 
 
 def prompt_missing_fields(record, review_reasons):
-    """Let the user fill in what the AI could not read. Returns a typed dict."""
+    """Let the user fill in what the AI could not read.
+
+    Only the fields that are actually missing are asked for. Returns a typed
+    dict of fixes, or {} when the user skips or cancels the review.
+    """
     _line()
     print("REVIEW THIS DEAL")
     for reason in review_reasons or []:
         print("  - %s" % reason)
     _line()
-    if not ask_yes_no("Fill in the missing details now?", default=True):
+    fill_in = ask_yes_no("Fill in the missing details now?", default=True,
+                         allow_back=False)
+    if not fill_in:
         return {}
 
     from_ai = record.get("ai") if isinstance(record.get("ai"), dict) else {}
-    fixes = {}
+    steps = []
 
     if not from_ai.get("merchant"):
-        fixes["merchant"] = ask_text("Store / brand name", required=True, max_length=120)
+        steps.append((
+            "merchant", "Store / brand name",
+            lambda values: ask_text("Store / brand name", required=True,
+                                    max_length=120,
+                                    default=str(values.get("merchant") or ""))))
     if not from_ai.get("category") or from_ai.get("category") == "other":
-        chosen = ask_choice("Category", list(config.VALID_CATEGORIES), allow_blank=True)
-        if chosen:
-            fixes["category"] = chosen
+        steps.append((
+            "category", "Category",
+            lambda values: ask_choice("Category", list(config.VALID_CATEGORIES),
+                                      allow_blank=True)))
     if not from_ai.get("expiry_date"):
-        expiry = ask_date("Expiry date", allow_blank=False)
-        if expiry:
-            fixes["expiry_date"] = expiry
+        steps.append((
+            "expiry_date", "Expiry date",
+            lambda values: ask_date("Expiry date", allow_blank=False,
+                                    default=values.get("expiry_date"))))
     if from_ai.get("discount_value") is None and from_ai.get("discounted_price") is None:
-        discount_type = ask_choice("What kind of discount is it?",
-                                   list(config.VALID_DISCOUNT_TYPES))
-        fixes["discount_type"] = discount_type
-        value = ask_float("Discount value (percent number, or amount off)",
-                          minimum=0.0, allow_blank=True)
-        if value is not None:
-            fixes["discount_value"] = value
+        steps.append((
+            "discount_type", "Kind of discount",
+            lambda values: ask_choice("What kind of discount is it?",
+                                      list(config.VALID_DISCOUNT_TYPES))))
+        steps.append((
+            "discount_value", "Discount value",
+            lambda values: ask_float("Discount value (percent number, or amount off)",
+                                     minimum=0.0, allow_blank=True,
+                                     default=values.get("discount_value"))))
 
-    eligibility = {}
-    if ask_yes_no("Is this deal restricted (students, seniors, age, one school)?",
-                  default=False):
-        eligibility["students_only"] = ask_yes_no("  Students only?", default=False)
-        eligibility["seniors_only"] = ask_yes_no("  Seniors only?", default=False)
-        age_limit = ask_int("  Minimum age (blank if none)", minimum=0, maximum=120,
-                            allow_blank=True)
-        if age_limit is not None:
-            eligibility["min_age"] = age_limit
-        school = ask_text("  Limited to one school? (blank if not)",
-                          required=False, max_length=80)
-        if school:
-            eligibility["school"] = school
-        eligibility["raw"] = "Confirmed by user"
-    else:
-        eligibility = {"students_only": False, "seniors_only": False,
-                       "min_age": None, "max_age": None, "school": None,
-                       "raw": "No restrictions (confirmed by user)"}
-    fixes["eligibility"] = eligibility
+    steps.append((
+        "restricted", "Is the deal restricted?",
+        lambda values: ask_yes_no(
+            "Is this deal restricted (students, seniors, age, one school)?",
+            default=bool(values.get("restricted", False)))))
+    steps.append((
+        "students_only", "Students only?",
+        lambda values: ask_yes_no("  Students only?",
+                                  default=bool(values.get("students_only", False)))
+        if values.get("restricted") else False))
+    steps.append((
+        "seniors_only", "Seniors only?",
+        lambda values: ask_yes_no("  Seniors only?",
+                                  default=bool(values.get("seniors_only", False)))
+        if values.get("restricted") else False))
+    steps.append((
+        "min_age", "Minimum age",
+        lambda values: ask_int("  Minimum age (blank if none)", minimum=0,
+                               maximum=120, allow_blank=True,
+                               default=values.get("min_age"))
+        if values.get("restricted") else None))
+    steps.append((
+        "school", "Limited to one school",
+        lambda values: ask_text("  Limited to one school? (blank if not)",
+                                required=False, max_length=80,
+                                default=str(values.get("school") or ""))
+        if values.get("restricted") else ""))
+
+    answers = _collect_with_review("Missing details", steps)
+    if answers is None or answers == BACK:
+        display_info("Review cancelled -- the deal stays in the needs-review list.")
+        return {}
+
+    fixes = {}
+    for key in ("merchant", "category", "expiry_date", "discount_type",
+                "discount_value"):
+        if answers.get(key) not in (None, ""):
+            fixes[key] = answers[key]
+
+    restricted = bool(answers.get("restricted"))
+    fixes["eligibility"] = {
+        "students_only": bool(answers.get("students_only")) if restricted else False,
+        "seniors_only": bool(answers.get("seniors_only")) if restricted else False,
+        "min_age": answers.get("min_age") if restricted else None,
+        "max_age": None,
+        "school": (answers.get("school") or None) if restricted else None,
+        "raw": "Confirmed by user" if restricted
+               else "No restrictions (confirmed by user)",
+    }
     return fixes
 
 
@@ -465,7 +661,9 @@ def prompt_deal_id(records, purpose="use"):
                  _shorten(format_discount(data), 18),
                  data.get("expiry_date") or "unknown"))
     while True:
-        answer = _read("Deal number (0 to cancel): ").strip()
+        answer = _read("Deal number (0 or b to go back): ").strip()
+        if _is_back(answer):
+            return None
         try:
             chosen = int(answer)
         except ValueError:
@@ -479,31 +677,52 @@ def prompt_deal_id(records, purpose="use"):
 
 
 def prompt_usage_details(record):
-    """Ask how much was saved (and optionally the basket total)."""
+    """Ask how much was saved (and the basket total when a minimum applies).
+
+    Returns a typed dict, or None if the user backed out.
+    """
     data = record.get("ai") if isinstance(record.get("ai"), dict) else {}
     minimum = data.get("min_spend")
-    spend = None
-    if isinstance(minimum, (int, float)) and minimum > 0:
+    needs_spend = isinstance(minimum, (int, float)) and minimum > 0
+
+    steps = []
+    if needs_spend:
         print("This deal needs a minimum spend of %s%.2f."
               % (config.CURRENCY, minimum))
-        spend = ask_float("How much did you spend in total (%s)?" % config.CURRENCY,
-                          minimum=0.0)
-    saved = ask_float("How much did you save (%s)?" % config.CURRENCY, minimum=0.0)
-    return {"amount_saved": saved, "spend_amount": spend}
+        steps.append((
+            "spend_amount", "Total you spent",
+            lambda values: ask_float(
+                "How much did you spend in total (%s)?" % config.CURRENCY,
+                minimum=0.0, default=values.get("spend_amount"))))
+    steps.append((
+        "amount_saved", "Amount you saved",
+        lambda values: ask_float("How much did you save (%s)?" % config.CURRENCY,
+                                 minimum=0.0, default=values.get("amount_saved"))))
+
+    answers = _run_steps(steps, {})
+    if answers is None:
+        return None
+    return {"amount_saved": answers.get("amount_saved"),
+            "spend_amount": answers.get("spend_amount") if needs_spend else None}
 
 
 def prompt_spend_amount():
-    return ask_float("Basket amount you plan to spend (%s)" % config.CURRENCY,
-                     minimum=0.0)
+    """Basket amount to test deals against. None means the user backed out."""
+    answer = ask_float("Basket amount you plan to spend (%s)" % config.CURRENCY,
+                       minimum=0.0)
+    return None if answer == BACK else answer
 
 
 def prompt_search_term():
-    return ask_text("Search for (shop, category or words in the deal)",
-                    required=True, max_length=80)
+    """Search term, or None if the user backed out."""
+    answer = ask_text("Search for (shop, category or words in the deal)",
+                      required=True, max_length=80)
+    return None if answer == BACK else answer
 
 
 def confirm(question, default=False):
-    return ask_yes_no(question, default=default)
+    """Yes/no question with no back option -- the caller needs a decision."""
+    return ask_yes_no(question, default=default, allow_back=False)
 
 
 # ==========================================================================
@@ -731,6 +950,10 @@ def display_spend_check(record, check):
 
 def display_working(message):
     print("  ... %s" % message)
+
+
+def display_cancelled(what="That"):
+    print("  %s was cancelled -- nothing was saved. Back to the menu." % what)
 
 
 def display_info(message):
