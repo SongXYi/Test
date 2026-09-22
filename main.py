@@ -5,8 +5,9 @@ The one job of this file is to move data along the pipeline:
     io_manager  ->  ai_manager  ->  logic_manager  ->  data_manager
     (collect)       (extract)       (decide)           (remember)
 
-It contains no print(), no input(), no API code and no business rules -- it
-only calls the managers in the right order.
+It writes nothing to the terminal, reads nothing from the keyboard, calls no
+API and holds no business rules -- it only calls the managers in the right
+order.
 """
 
 import logging
