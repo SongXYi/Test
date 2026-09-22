@@ -11,14 +11,17 @@ Note on output: this script writes its summary with sys.stdout.write, because
 terminal output is reserved for io_manager.py in this codebase.
 """
 
+import contextlib
 import json
 import os
 import sys
 import tempfile
+from io import StringIO
 
 import ai_manager
 import config
 import data_manager
+import io_manager
 import logic_manager
 
 TODAY = "2026-09-22"
@@ -720,8 +723,14 @@ def test_call_api_rejects_an_empty_prompt_without_network_access():
     assert result["raw"] == ""
 
 
-def test_encode_image_survives_a_missing_file():
-    assert ai_manager.encode_image("/no/such/voucher.jpg") == ""
+def test_prompt_is_text_only_for_now():
+    prompt = ai_manager.build_prompt({"source_type": "manual",
+                                      "raw_text": "merchant: Guardian",
+                                      "hints": {"merchant": "Guardian"}})
+    assert "image_data_url" not in prompt
+    assert prompt["model"] == config.TEXT_MODEL
+    assert config.VALID_SOURCE_TYPES == ("text", "manual")
+    assert not hasattr(ai_manager, "encode_image")
 
 
 # ==========================================================================
@@ -822,6 +831,200 @@ def test_profile_round_trip_with_defaults():
     assert loaded["is_student"] is True
     assert loaded["school"] == "University Malaya"
     assert loaded["typical_spend"] == 30.0
+
+
+# ==========================================================================
+# Input layer -- back navigation and the two supported input methods
+#
+# io_manager._read is swapped for a scripted queue and the screen output is
+# captured, so these run with no keyboard and no terminal.
+# ==========================================================================
+@contextlib.contextmanager
+def scripted_terminal(answers):
+    """Feed io_manager a fixed list of keystrokes and swallow its output."""
+    queue = list(answers)
+    original_read = io_manager._read
+
+    def fake_read(prompt_text):
+        if not queue:
+            raise AssertionError(
+                "the screen asked more questions than the script answered: %s"
+                % prompt_text)
+        return queue.pop(0)
+
+    io_manager._read = fake_read
+    try:
+        with contextlib.redirect_stdout(StringIO()):
+            yield queue
+    finally:
+        io_manager._read = original_read
+
+
+def test_only_two_ways_to_add_a_deal_for_now():
+    assert len(io_manager.ADD_METHODS) == 2
+    joined = " ".join(io_manager.ADD_METHODS).lower()
+    assert "paste" in joined
+    assert "type" in joined
+    assert "image" not in joined and "scan" not in joined
+    assert not hasattr(io_manager, "ask_image_path")
+
+
+def test_every_collector_understands_the_back_keyword():
+    with scripted_terminal(["b"]):
+        assert io_manager.ask_text("Name") == io_manager.BACK
+    with scripted_terminal(["back"]):
+        assert io_manager.ask_int("Age", minimum=0) == io_manager.BACK
+    with scripted_terminal(["B"]):
+        assert io_manager.ask_float("Amount", minimum=0.0) == io_manager.BACK
+    with scripted_terminal(["b"]):
+        assert io_manager.ask_yes_no("Sure?", default=True) == io_manager.BACK
+    with scripted_terminal(["b"]):
+        assert io_manager.ask_date("Expiry") == io_manager.BACK
+    with scripted_terminal(["b"]):
+        assert io_manager.ask_choice("Pick", ["one", "two"]) == io_manager.BACK
+    with scripted_terminal(["back"]):
+        assert io_manager.ask_multiline("Paste") == io_manager.BACK
+
+
+def test_backing_out_of_the_first_question_cancels_the_screen():
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_new_deal() is None
+
+
+def test_back_from_the_paste_screen_returns_to_the_method_question():
+    script = ["1", "back",            # paste screen, then change my mind
+              "1", "ZUS 50% off", ""]  # paste again for real
+    with scripted_terminal(script) as queue:
+        deal = io_manager.prompt_new_deal()
+    assert queue == []
+    assert deal["source_type"] == "text"
+    assert deal["raw_text"] == "ZUS 50% off"
+
+
+def test_manual_wizard_steps_back_to_fix_an_earlier_answer():
+    script = [
+        "2",            # type the details in myself
+        "Gardian",      # merchant, typed wrong
+        "5",            # category -> cosmetics
+        "b",            # at the description: go back to category
+        "b",            # at the category: go back to the merchant
+        "Guardian",     # merchant fixed
+        "5",            # category again
+        "RM10 off when you spend RM50",
+        "",             # original price unknown
+        "",             # discounted price unknown
+        "2026-12-31",   # expiry
+        "50",           # minimum spend
+        "",             # no extra conditions
+        "n",            # reusable
+        "1",            # save these answers
+    ]
+    with scripted_terminal(script) as queue:
+        deal = io_manager.prompt_new_deal()
+    assert queue == []
+    assert deal["source_type"] == "manual"
+    assert deal["hints"]["merchant"] == "Guardian"
+    assert deal["hints"]["category"] == "cosmetics"
+    assert deal["hints"]["min_spend"] == 50.0
+    assert deal["hints"]["single_use"] is False
+    assert "conditions" not in deal["hints"]
+    assert "Guardian" in deal["raw_text"]
+
+
+def test_draft_review_lets_the_user_change_one_answer():
+    script = [
+        "2", "ZUS", "1", "50% off drinks", "", "", "2026-10-10", "", "", "y",
+        "2",            # change one answer
+        "1",            # the store name
+        "ZUS Coffee",
+        "1",            # save
+    ]
+    with scripted_terminal(script) as queue:
+        deal = io_manager.prompt_new_deal()
+    assert queue == []
+    assert deal["hints"]["merchant"] == "ZUS Coffee"
+    assert deal["hints"]["category"] == "food"
+
+
+def test_draft_review_can_cancel_the_whole_screen():
+    script = ["2", "ZUS", "1", "50% off", "", "", "2026-10-10", "", "", "y", "4"]
+    with scripted_terminal(script):
+        assert io_manager.prompt_new_deal() is None
+
+
+def test_profile_screen_supports_back_and_returns_typed_values():
+    script = ["Ali", "y", "UM",
+              "b",                    # at the age question: back to the school
+              "University Malaya",
+              "21", "30", "1"]
+    with scripted_terminal(script) as queue:
+        profile = io_manager.prompt_profile({})
+    assert queue == []
+    assert profile["name"] == "Ali"
+    assert profile["is_student"] is True
+    assert profile["school"] == "University Malaya"
+    assert profile["age"] == 21
+    assert profile["is_senior"] is False
+    assert profile["typical_spend"] == 30.0
+
+
+def test_profile_screen_cancels_cleanly():
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_profile({}) is None
+
+
+def test_usage_details_can_step_back_to_fix_the_spend():
+    record = sample_record()
+    with scripted_terminal(["20", "b", "25", "10"]) as queue:
+        details = io_manager.prompt_usage_details(record)
+    assert queue == []
+    assert details == {"spend_amount": 25.0, "amount_saved": 10.0}
+
+
+def test_usage_details_cancels_when_backing_out_of_the_first_question():
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_usage_details(sample_record()) is None
+
+
+def test_deal_picker_and_simple_prompts_accept_back():
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_deal_id([sample_record()], "use") is None
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_spend_amount() is None
+    with scripted_terminal(["b"]):
+        assert io_manager.prompt_search_term() is None
+
+
+def test_review_screen_can_be_skipped_or_cancelled():
+    record = sample_record(expiry_date=None, missing_fields=["expiry_date"])
+    with scripted_terminal(["n"]):
+        assert io_manager.prompt_missing_fields(record, ["No expiry date"]) == {}
+    # y, then back out of the first question -> nothing is changed
+    with scripted_terminal(["y", "b"]):
+        assert io_manager.prompt_missing_fields(record, ["No expiry date"]) == {}
+
+
+def test_review_screen_collects_only_the_missing_fields():
+    record = sample_record(expiry_date=None, missing_fields=["expiry_date"])
+    script = ["y",              # yes, fill it in
+              "2026-11-30",     # the only missing field: expiry date
+              "y",              # restricted?
+              "y",              # students only
+              "n",              # seniors only
+              "",               # no minimum age
+              "",               # not limited to one school
+              "1"]              # save
+    with scripted_terminal(script) as queue:
+        fixes = io_manager.prompt_missing_fields(record, ["No expiry date"])
+    assert queue == []
+    assert fixes["expiry_date"] == "2026-11-30"
+    assert "merchant" not in fixes          # the AI already had it
+    assert fixes["eligibility"]["students_only"] is True
+    assert fixes["eligibility"]["seniors_only"] is False
+    assert fixes["eligibility"]["min_age"] is None
+
+    completed = logic_manager.complete_missing_fields(record, fixes)
+    assert logic_manager.check_needs_review(completed)[0] is False
 
 
 # ==========================================================================

@@ -1,8 +1,8 @@
 # DealKeeper
 
 A terminal application that keeps track of the deals, vouchers and student
-discounts you collect, so you stop losing them. You paste a promo message or
-point it at a photo of a voucher; a Groq model reads it and turns it into
+discounts you collect, so you stop losing them. You paste the promo message (or
+type the details in yourself); a Groq model reads it and turns it into
 structured data; the app then tells you what you actually qualify for, what
 dies this week, what you already used, and how much you have saved.
 
@@ -24,13 +24,40 @@ payload the model returns *is* the record everything else works on.
 
 | File | Responsibility | Key functions |
 |---|---|---|
-| `io_manager.py` | The only module that talks to the user. Validates every value (type, range, required) and re-prompts instead of crashing. | `ask_text`, `ask_int`, `ask_float`, `ask_yes_no`, `ask_choice`, `ask_date`, `ask_image_path`, `prompt_new_deal`, `prompt_profile`, `prompt_missing_fields`, `display_record`, `display_list`, `display_result`, `display_summary` |
+| `io_manager.py` | The only module that talks to the user. Validates every value (type, range, required), re-prompts instead of crashing, and lets you step back through the questions. | `ask_text`, `ask_int`, `ask_float`, `ask_yes_no`, `ask_choice`, `ask_date`, `ask_multiline`, `prompt_new_deal`, `prompt_profile`, `prompt_missing_fields`, `display_record`, `display_list`, `display_result`, `display_summary` |
 | `ai_manager.py` | Core engine. Every record passes through the Groq API. No domain rules here. | `build_prompt`, `call_api`, `parse_response`, `validate_response`, `process` |
 | `logic_manager.py` | Domain brain: expiry, eligibility, duplicates, review queue, minimum spend, usage and savings. | `evaluate`, `score`, `route`, `check_expiry`, `check_eligibility`, `check_needs_review`, `find_duplicate`, `check_min_spend`, `mark_used`, `compute_summary`, `refresh_statuses`, `rank` |
 | `data_manager.py` | Memory. Flat JSON file, atomic writes, stable ordering, graceful failure. | `save`, `load`, `query`, `update_record`, `delete_record`, `load_profile`, `save_profile` |
 
 `config.py` holds shared constants (categories, thresholds, paths) and sends
 all diagnostics to `data/app.log` — never to the terminal.
+
+## Adding a deal
+
+Two input methods for now:
+
+1. **Paste the promo text** — the forwarded WhatsApp message, the email body,
+   the caption from an ad. Paste as many lines as you like and press Enter on a
+   blank line.
+2. **Type the details in yourself** — a guided form (store, category,
+   description, prices, expiry, minimum spend, conditions, single use).
+
+Either way the text goes to the model, which returns the structured record.
+Scanning a photo of a voucher is **not implemented yet**; the input layer and
+the prompt are text-only.
+
+## Fixing a wrong answer
+
+No question is a dead end:
+
+* Type `b` (or `back`) at any prompt to return to the previous question. On a
+  paste screen, type `back` on the first line.
+* Backing out of the first question leaves the screen and returns you to the
+  menu without saving anything.
+* Multi-question screens (new deal, profile, review) finish with a **draft of
+  your answers**, where you can save, change one specific answer, start the
+  screen over, or cancel.
+* The deal pickers accept `0` or `b` to go back.
 
 ## Business rules implemented
 
@@ -77,6 +104,7 @@ lists; an expired deal always scores 0.
 
 ## Prompt design
 
+The prompt is text-only (pasted promotions and typed details).
 `ai_manager.SYSTEM_PROMPT` pins down an exact 14-key JSON schema (merchant,
 category, discount type/value, prices, description, expiry, eligibility object,
 minimum spend, single use, terms, confidence, missing fields), asks for JSON
@@ -103,7 +131,7 @@ committed: `.env` is git-ignored.
 ## Menu
 
 ```
- 1  Add a deal (scan an image, paste text, or type it in)
+ 1  Add a deal (paste the promo text, or type it in)
  2  My deals (ready to use)          7  Expired deals
  3  Expiring soon                    8  Mark a deal as used
  4  Needs review                     9  What can I use for a basket amount?
@@ -126,8 +154,9 @@ byte-identical file across separate runs.
 
 ## Tests
 
-84 assertions covering the business rules with hardcoded AI responses, the
-schema validation, the persistence layer, and guard tests for the "no types"
+98 assertions covering the business rules with hardcoded AI responses, the
+schema validation, the persistence layer, the back-navigation behaviour of the
+input screens (a scripted fake terminal), and guard tests for the "no types"
 and "terminal access only in io_manager" constraints. No network needed — the
 API call is stubbed where it matters.
 
