@@ -213,6 +213,8 @@ def call_api(prompt):
         return result
 
     json_mode = bool(prompt.get("json_mode", True))
+    user_agent = config.API_USER_AGENT
+    tried_fallback_agent = False
     delay = 1.0
 
     for attempt in range(1, config.API_MAX_ATTEMPTS + 1):
@@ -221,10 +223,7 @@ def call_api(prompt):
         request = urllib.request.Request(
             config.API_URL,
             data=body,
-            headers={
-                "Authorization": "Bearer %s" % api_key,
-                "Content-Type": "application/json",
-            },
+            headers=_build_headers(api_key, user_agent),
             method="POST",
         )
         try:
@@ -245,19 +244,31 @@ def call_api(prompt):
 
         except urllib.error.HTTPError as error:
             detail = _read_error_body(error)
-            LOGGER.error("HTTP %s from Groq (attempt %d): %s",
-                         error.code, attempt, detail[:400])
+            LOGGER.error("HTTP %s from Groq (attempt %d, UA=%r): %s",
+                         error.code, attempt, user_agent, detail[:400])
+            result["error"] = _explain_http_error(error.code, detail,
+                                                  prompt.get("model"))
+
             if error.code == 400 and json_mode and "response_format" in detail:
                 LOGGER.warning("Model rejected json_object mode; retrying plain text.")
                 json_mode = False
                 continue
+
+            # A 403 here is usually the Cloudflare edge judging our client
+            # signature (error 1010), not Groq rejecting the key. Try once more
+            # with a browser User-Agent before giving up.
+            if error.code == 403 and not tried_fallback_agent:
+                tried_fallback_agent = True
+                user_agent = config.API_FALLBACK_USER_AGENT
+                LOGGER.warning("403 from the edge; retrying with a browser "
+                               "User-Agent.")
+                continue
+
             if error.code in (408, 409, 429, 500, 502, 503, 504) \
                     and attempt < config.API_MAX_ATTEMPTS:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            result["error"] = "Groq API returned HTTP %s: %s" % (
-                error.code, _short_reason(detail))
             return result
 
         except urllib.error.URLError as error:
@@ -319,6 +330,41 @@ def _first_message(payload):
                  if isinstance(part, dict)]
         content = "".join(parts)
     return str(content or "").strip()
+
+
+def _build_headers(api_key, user_agent):
+    """Headers for one request. A real User-Agent is required: see config."""
+    return {
+        "Authorization": "Bearer %s" % api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": user_agent,
+    }
+
+
+def _explain_http_error(code, detail, model=None):
+    """Turn an HTTP failure into a sentence the user can act on."""
+    if code == 403 and "1010" in str(detail):
+        return ("Blocked by Cloudflare in front of the Groq API "
+                "(HTTP 403, error 1010 -- 'browser signature'). This is the "
+                "network path, not your API key: the request never reached "
+                "Groq. Try another network (phone hotspot, or off the "
+                "VPN/campus/company proxy); cloud and VPN address ranges are "
+                "often blocked.")
+    if code == 403:
+        return ("Groq refused the request (HTTP 403). If your key is valid, a "
+                "proxy or firewall on this network is intercepting the call: %s"
+                % _short_reason(detail))
+    if code == 401:
+        return ("Groq rejected the API key (HTTP 401). Check GROQ_API_KEY in "
+                "your .env file -- it may be revoked, mistyped, or truncated.")
+    if code == 404 and model:
+        return ("Groq does not know the model '%s' (HTTP 404). Set "
+                "GROQ_TEXT_MODEL to a model your account can use." % model)
+    if code == 429:
+        return ("Groq rate limit or quota reached (HTTP 429). Wait a minute and "
+                "try again: %s" % _short_reason(detail))
+    return "Groq API returned HTTP %s: %s" % (code, _short_reason(detail))
 
 
 def _read_error_body(error):

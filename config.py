@@ -25,6 +25,17 @@ API_URL = "https://api.groq.com/openai/v1/chat/completions"
 TEXT_MODEL = os.environ.get("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
 API_TIMEOUT_SECONDS = 45
 API_MAX_ATTEMPTS = 3          # network/transient retries inside call_api
+
+# Identify the client. urllib's default "Python-urllib/3.x" User-Agent is a
+# known trigger for the Cloudflare edge in front of api.groq.com, which answers
+# HTTP 403 with error code 1010 ("browser signature") before Groq ever sees the
+# request. Sending a real User-Agent avoids it; the browser string is only used
+# as a fallback when a 403 still comes back.
+API_USER_AGENT = os.environ.get("GROQ_USER_AGENT", "DealKeeper/1.0 (Groq API client)")
+API_FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 SCHEMA_MAX_ATTEMPTS = 2       # re-ask the model when the JSON fails validation
 API_TEMPERATURE = 0.0         # deterministic-as-possible extraction
 

@@ -128,6 +128,34 @@ python3 main.py
 `GROQ_API_KEY` can also be exported as an environment variable. Keys are never
 committed: `.env` is git-ignored.
 
+## Troubleshooting the API call
+
+**`HTTP 403: error code: 1010`** — this is Cloudflare, sitting in front of
+`api.groq.com`, rejecting the *client signature* before Groq sees the request.
+Your key is fine. The usual cause is the `Python-urllib/3.x` User-Agent that
+urllib sends by default, which is why the client now sends its own User-Agent
+and retries once with a browser one. If it still happens, the block is on your
+network address:
+
+* Test the key straight from the shell — if this also returns 1010, the network
+  is the problem, not the code:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' https://api.groq.com/openai/v1/models \
+    -H "Authorization: Bearer $GROQ_API_KEY" -H "User-Agent: DealKeeper/1.0"
+  ```
+
+* Switch networks: a phone hotspot usually works where a campus, office or VPN
+  connection does not. Cloud/VPN address ranges are frequently blocked.
+* Turn off any VPN, proxy or "secure DNS"/filtering extension.
+* Override the agent without touching the code if your network wants a
+  particular one: `GROQ_USER_AGENT="Mozilla/5.0 ..."` in `.env`.
+
+Other failures are reported with their own advice: **401** means the key is
+wrong or revoked, **404** means the model name is not available to your account
+(set `GROQ_TEXT_MODEL`), **429** means you hit the rate limit. Full request and
+response detail always lands in `data/app.log`.
+
 ## Menu
 
 ```

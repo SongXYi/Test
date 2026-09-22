@@ -723,6 +723,36 @@ def test_call_api_rejects_an_empty_prompt_without_network_access():
     assert result["raw"] == ""
 
 
+def test_requests_carry_a_real_user_agent():
+    # urllib's default "Python-urllib/x.y" agent is what makes the Cloudflare
+    # edge in front of Groq answer 403 / error 1010.
+    headers = ai_manager._build_headers("gsk_test", config.API_USER_AGENT)
+    assert headers["Authorization"] == "Bearer gsk_test"
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Accept"] == "application/json"
+    assert headers["User-Agent"]
+    assert "urllib" not in headers["User-Agent"].lower()
+    assert "python" not in headers["User-Agent"].lower()
+    assert "urllib" not in config.API_FALLBACK_USER_AGENT.lower()
+
+
+def test_cloudflare_1010_is_explained_as_a_network_block():
+    message = ai_manager._explain_http_error(
+        403, "error code: 1010", "llama-3.3-70b-versatile")
+    assert "1010" in message
+    assert "not your API key" in message
+    assert "network" in message.lower()
+
+
+def test_other_http_failures_get_their_own_advice():
+    assert "401" in ai_manager._explain_http_error(401, "bad key")
+    assert "GROQ_API_KEY" in ai_manager._explain_http_error(401, "bad key")
+    assert "GROQ_TEXT_MODEL" in ai_manager._explain_http_error(
+        404, '{"error":{"message":"model not found"}}', "made-up-model")
+    assert "rate limit" in ai_manager._explain_http_error(429, "slow down").lower()
+    assert "500" in ai_manager._explain_http_error(500, "boom")
+
+
 def test_prompt_is_text_only_for_now():
     prompt = ai_manager.build_prompt({"source_type": "manual",
                                       "raw_text": "merchant: Guardian",

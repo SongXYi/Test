@@ -981,8 +981,8 @@ def display_ai_failure(errors):
         print("  ! %s" % error)
     print("  Nothing was saved -- every deal has to come back from the AI as")
     print("  structured data before DealKeeper will store it.")
-    print("  Check your internet connection and GROQ_API_KEY, then try again.")
-    print("  Details were written to %s" % config.LOG_FILE)
+    print("  Fix the problem above and add the deal again.")
+    print("  The full request/response detail is in %s" % config.LOG_FILE)
     _line("=")
 
 
