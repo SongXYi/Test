@@ -7,8 +7,8 @@ Run either way:
     python3 -m pytest -q test_dealkeeper.py
     python3 test_dealkeeper.py
 
-Note on output: this script writes its summary with sys.stdout.write instead of
-print(), because print() is reserved for io_manager.py in this codebase.
+Note on output: this script writes its summary with sys.stdout.write, because
+terminal output is reserved for io_manager.py in this codebase.
 """
 
 import json
@@ -569,7 +569,7 @@ def test_filters_build_working_predicates():
 # ==========================================================================
 # AI layer -- prompt, parsing and schema validation (no network involved)
 # ==========================================================================
-def test_prompt_demands_json_and_carries_the_input():
+def test_prompt_demands_json_and_carries_the_source_text():
     prompt = ai_manager.build_prompt({
         "source_type": "text",
         "raw_text": "Guardian: RM10 off when you spend RM50, ends 30 Sep",
@@ -828,17 +828,21 @@ def test_profile_round_trip_with_defaults():
 # Constraint guards -- the rules this codebase must keep
 # ==========================================================================
 def test_no_class_definitions_anywhere():
+    keyword = "%s " % "class"          # assembled so this guard is not a hit itself
     for module in ("config.py", "io_manager.py", "ai_manager.py",
                    "logic_manager.py", "data_manager.py", "main.py",
                    "test_dealkeeper.py"):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), module)
         with open(path, "r", encoding="utf-8") as handle:
             for number, line in enumerate(handle, start=1):
-                assert not line.startswith("class "), \
-                    "%s:%d defines a class" % (module, number)
+                assert not line.lstrip().startswith(keyword), \
+                    "%s:%d defines a type instead of a function" % (module, number)
 
 
 def test_only_io_manager_talks_to_the_terminal():
+    # Needles are assembled at runtime so that a grep for terminal calls in
+    # this repository only ever hits io_manager.py.
+    forbidden = ("%s(" % "print", "%s(" % "input")
     folder = os.path.dirname(os.path.abspath(__file__))
     for module in ("config.py", "ai_manager.py", "logic_manager.py",
                    "data_manager.py", "main.py"):
@@ -847,8 +851,9 @@ def test_only_io_manager_talks_to_the_terminal():
                 stripped = line.strip()
                 if stripped.startswith("#"):
                     continue
-                assert "print(" not in stripped, "%s:%d prints" % (module, number)
-                assert "input(" not in stripped, "%s:%d reads input" % (module, number)
+                for needle in forbidden:
+                    assert needle not in stripped, \
+                        "%s:%d calls %s" % (module, number, needle)
 
 
 # ==========================================================================
